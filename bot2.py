@@ -1,10 +1,11 @@
 # =========================================================
-# POLYMARKET BOT COMPLETO
-# EMA + RSI + STREAMLIT + PY_CLOB_CLIENT
+# STREAMLIT BTC BOT
+# EMA + RSI MANUAL
+# COMPATIBLE CON STREAMLIT CLOUD
 # =========================================================
 
 # INSTALAR:
-# pip install streamlit pandas pandas-ta plotly requests py-clob-client
+# pip install streamlit pandas plotly requests numpy
 
 # EJECUTAR:
 # streamlit run app.py
@@ -15,76 +16,32 @@
 
 import streamlit as st
 import pandas as pd
-import pandas_ta as ta
 import requests
 import plotly.graph_objects as go
+import numpy as np
 import time
-
-from py_clob_client.client import ClobClient
 
 # =========================================================
 # CONFIG STREAMLIT
 # =========================================================
 
 st.set_page_config(
-    page_title="Polymarket BTC Bot",
+    page_title="BTC Trading Bot",
     layout="wide"
 )
 
-st.title("📈 POLYMARKET BTC BOT")
-
-# =========================================================
-# CONFIG POLYMARKET
-# =========================================================
-
-HOST = "https://clob.polymarket.com"
-
-CHAIN_ID = 137
-
-# ============================================
-# TUS DATOS
-# ============================================
-
-PRIVATE_KEY = "TU_PRIVATE_KEY"
-
-FUNDER = "TU_DIRECCION_WALLET"
-
-# TOKEN YES DEL MERCADO
-TOKEN_ID = "TOKEN_ID"
-
-# =========================================================
-# CONECTAR POLYMARKET
-# =========================================================
-
-try:
-
-    client = ClobClient(
-        HOST,
-        key=PRIVATE_KEY,
-        chain_id=CHAIN_ID,
-        signature_type=1,
-        funder=FUNDER
-    )
-
-    api_creds = client.create_or_derive_api_creds()
-
-    client.set_api_creds(api_creds)
-
-    st.success("✅ Conectado a Polymarket")
-
-except Exception as e:
-
-    st.error(f"❌ Error conexión: {e}")
+st.title("📈 BTC EMA + RSI BOT")
 
 # =========================================================
 # SIDEBAR
 # =========================================================
 
-st.sidebar.header("⚙️ CONFIGURACIÓN")
+st.sidebar.header("⚙️ Configuración")
 
 symbol = st.sidebar.selectbox(
     "Par",
-    ["BTCUSDT"]
+    ["BTCUSDT", "ETHUSDT"],
+    index=0
 )
 
 interval = st.sidebar.selectbox(
@@ -116,24 +73,15 @@ rsi_period = st.sidebar.slider(
 
 capital = st.sidebar.number_input(
     "Capital",
-    value=100.0
-)
-
-order_size = st.sidebar.number_input(
-    "Tamaño Orden",
-    value=5.0
-)
-
-enable_real_orders = st.sidebar.checkbox(
-    "ACTIVAR ÓRDENES REALES"
+    value=1000.0
 )
 
 # =========================================================
-# OBTENER DATOS BTC
+# OBTENER DATOS BINANCE
 # =========================================================
 
 @st.cache_data(ttl=30)
-def get_data():
+def get_data(symbol, interval):
 
     url = (
         f"https://api.binance.com/api/v3/klines"
@@ -175,25 +123,44 @@ def get_data():
     return df
 
 # =========================================================
-# INDICADORES
+# EMA MANUAL
 # =========================================================
 
-def indicators(df):
+def calculate_ema(df):
 
-    df["EMA_FAST"] = ta.ema(
-        df["close"],
-        length=ema_fast
+    df["EMA_FAST"] = (
+        df["close"]
+        .ewm(span=ema_fast, adjust=False)
+        .mean()
     )
 
-    df["EMA_SLOW"] = ta.ema(
-        df["close"],
-        length=ema_slow
+    df["EMA_SLOW"] = (
+        df["close"]
+        .ewm(span=ema_slow, adjust=False)
+        .mean()
     )
 
-    df["RSI"] = ta.rsi(
-        df["close"],
-        length=rsi_period
-    )
+    return df
+
+# =========================================================
+# RSI MANUAL
+# =========================================================
+
+def calculate_rsi(df):
+
+    delta = df["close"].diff()
+
+    gain = delta.clip(lower=0)
+
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(rsi_period).mean()
+
+    avg_loss = loss.rolling(rsi_period).mean()
+
+    rs = avg_gain / avg_loss
+
+    df["RSI"] = 100 - (100 / (1 + rs))
 
     return df
 
@@ -204,6 +171,7 @@ def indicators(df):
 def signals(df):
 
     last = df.iloc[-1]
+
     prev = df.iloc[-2]
 
     buy_signal = (
@@ -221,39 +189,16 @@ def signals(df):
     return buy_signal, sell_signal
 
 # =========================================================
-# CREAR ORDEN POLYMARKET
-# =========================================================
-
-def buy_yes():
-
-    try:
-
-        order = client.create_order(
-            token_id=TOKEN_ID,
-            side="BUY",
-            price=0.55,
-            size=order_size
-        )
-
-        result = client.post_order(order)
-
-        st.success("🟢 ORDEN YES EJECUTADA")
-
-        st.write(result)
-
-    except Exception as e:
-
-        st.error(f"ERROR ORDEN: {e}")
-
-# =========================================================
 # CARGAR DATOS
 # =========================================================
 
-with st.spinner("Analizando BTC..."):
+with st.spinner("Analizando mercado..."):
 
-    df = get_data()
+    df = get_data(symbol, interval)
 
-    df = indicators(df)
+    df = calculate_ema(df)
+
+    df = calculate_rsi(df)
 
     buy_signal, sell_signal = signals(df)
 
@@ -268,7 +213,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
 
     st.metric(
-        "BTC",
+        "Precio",
         f"${current_price:,.2f}"
     )
 
@@ -289,29 +234,56 @@ with col3:
     )
 
     st.metric(
-        "TENDENCIA",
+        "Tendencia",
         trend
     )
 
 # =========================================================
-# SEÑALES
+# SEÑALES VISUALES
 # =========================================================
 
 if buy_signal:
 
-    st.success("🟢 SEÑAL COMPRA")
-
-    if enable_real_orders:
-
-        buy_yes()
+    st.success("🟢 SEÑAL DE COMPRA")
 
 elif sell_signal:
 
-    st.error("🔴 SEÑAL VENTA")
+    st.error("🔴 SEÑAL DE VENTA")
 
 else:
 
     st.warning("🟡 SIN SEÑAL")
+
+# =========================================================
+# PAPER TRADING
+# =========================================================
+
+st.subheader("💰 Paper Trading")
+
+if "position" not in st.session_state:
+    st.session_state.position = False
+
+if "entry_price" not in st.session_state:
+    st.session_state.entry_price = 0
+
+if buy_signal and not st.session_state.position:
+
+    st.session_state.position = True
+
+    st.session_state.entry_price = current_price
+
+    st.success(
+        f"Compra simulada en ${current_price:,.2f}"
+    )
+
+if st.session_state.position:
+
+    pnl = (
+        (current_price - st.session_state.entry_price)
+        / st.session_state.entry_price
+    ) * 100
+
+    st.info(f"PnL: {pnl:.2f}%")
 
 # =========================================================
 # CHART
@@ -362,15 +334,15 @@ st.plotly_chart(
 # RSI CHART
 # =========================================================
 
-st.subheader("RSI")
+st.subheader("📊 RSI")
 
 st.line_chart(df["RSI"])
 
 # =========================================================
-# ÚLTIMAS VELAS
+# TABLA
 # =========================================================
 
-st.subheader("Últimas Velas")
+st.subheader("📄 Últimas Velas")
 
 st.dataframe(
     df.tail(10),
@@ -378,18 +350,10 @@ st.dataframe(
 )
 
 # =========================================================
-# INFO MERCADO
-# =========================================================
-
-st.subheader("Mercado Polymarket")
-
-st.write(f"TOKEN_ID: {TOKEN_ID}")
-
-# =========================================================
 # AUTO REFRESH
 # =========================================================
 
-refresh = st.checkbox("Auto Refresh")
+refresh = st.checkbox("🔄 Auto Refresh")
 
 if refresh:
 
